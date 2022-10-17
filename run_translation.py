@@ -232,8 +232,11 @@ class DataTrainingArguments:
     eval_subset: str = field(default='validation')
     patience: int = field(default=None)
 
+    data_load_script: str = field(default=None)
+    data_dir: str = field(default=None)
+
     def __post_init__(self):
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
+        if self.dataset_name is None and self.train_file is None and self.validation_file is None and self.test_file is None:
             raise ValueError("Need either a dataset name or a training/validation file.")
         elif self.source_lang is None or self.target_lang is None:
             raise ValueError("Need to specify the source language and the target language.")
@@ -242,12 +245,14 @@ class DataTrainingArguments:
         # many jsonlines files actually have a .json extension
         valid_extensions = ["json", "jsonl"]
 
+        """""
         if self.train_file is not None:
             extension = self.train_file.split(".")[-1]
             assert extension in valid_extensions, "`train_file` should be a jsonlines file."
         if self.validation_file is not None:
             extension = self.validation_file.split(".")[-1]
             assert extension in valid_extensions, "`validation_file` should be a jsonlines file."
+        """""
         if self.val_max_target_length is None:
             self.val_max_target_length = self.max_target_length
 
@@ -268,14 +273,15 @@ class KNNArguments:
     knn_temp: float = field(default=50)
     # Args for building the faiss index:
     build_index: bool = field(default=False)
-    # faiss_index: str = field(default="checkpoints/index")
-    ncentroids: int = field(default=4096)
+    faiss_index: str = field(default="checkpoints/index")
+    ncentroids: int = field(default=2000)
     code_size: int = field(default=64)
     probe: int = field(default=32)
     num_keys_to_add_at_a_time: int = field(default=1000000)
     move_dstore_to_mem: bool = field(default=True)
     no_load_keys: bool = field(default=True)
     recompute_dists: bool = field(default=False)
+    knn_drop: float = field(default=0.0)
 
     ## RetoMaton args:
     retomaton: bool = field(default=False)
@@ -373,22 +379,26 @@ def main():
             use_auth_token=True if model_args.use_auth_token else None,
         )
     else:
-        data_files = {}
         if data_args.train_file is not None:
-            data_files["train"] = data_args.train_file
-            extension = data_args.train_file.split(".")[-1]
-        if data_args.validation_file is not None:
-            data_files["validation"] = data_args.validation_file
-            extension = data_args.validation_file.split(".")[-1]
+            logging.info("loading training data...")
+            #Careful that Mbart models require source and target langs in the form en_XX for example
+            raw_datasets = load_dataset(
+                data_args.data_load_script,
+                data_dir=data_args.data_dir,
+                lang1=(data_args.source_lang).split("_")[0],
+                lang2=(data_args.target_lang).split("_")[0],
+                cache_dir=model_args.cache_dir,
+                download_mode="force_redownload",
+                ignore_verifications=True
+            )
+
         if data_args.test_file is not None:
+            data_files={}
             data_files["test"] = data_args.test_file
-            extension = data_args.test_file.split(".")[-1]
-        raw_datasets = load_dataset(
-            extension,
-            data_files=data_files,
-            cache_dir=model_args.cache_dir,
-            use_auth_token=True if model_args.use_auth_token else None,
-        )
+            #extension = data_args.test_file.split(".")[-1]
+            data_files = {}
+            logging.info("loading test data...")
+            raw_datasets = load_dataset('text', data_files={'test': data_args.test_file}, download_mode="force_redownload")
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
@@ -438,8 +448,8 @@ def main():
     knn_wrapper = None
     knn_args.seed = training_args.seed
     if knn_args.retomaton or knn_args.cluster_dstore:
-        knn_wrapper = RetomatonWrapper(dstore_size=knn_args.dstore_size, dstore_dir=knn_args.dstore_dir, 
-            dimension=dimension, 
+        knn_wrapper = RetomatonWrapper(dstore_size=knn_args.dstore_size, dstore_dir=knn_args.dstore_dir,
+            dimension=dimension,
             knn_sim_func=knn_args.knn_sim_func, knn_keytype=knn_args.knn_keytype,
             no_load_keys=knn_args.no_load_keys, move_dstore_to_mem=knn_args.move_dstore_to_mem, knn_gpu=knn_args.knn_gpu,
             recompute_dists=knn_args.recompute_dists,
@@ -447,17 +457,17 @@ def main():
             no_pointer=knn_args.no_pointer, min_knns=knn_args.min_knns, max_knns=knn_args.max_knns,
             members=knn_args.members)
     elif knn_args.knn:
-        knn_wrapper = KNNWrapper(dstore_size=knn_args.dstore_size, dstore_dir=knn_args.dstore_dir, 
-            dimension= dimension, 
+        knn_wrapper = KNNWrapper(dstore_size=knn_args.dstore_size, dstore_dir=knn_args.dstore_dir,
+            dimension= dimension,
             knn_sim_func=knn_args.knn_sim_func, knn_keytype=knn_args.knn_keytype,
             no_load_keys=knn_args.no_load_keys, move_dstore_to_mem=knn_args.move_dstore_to_mem, knn_gpu=knn_args.knn_gpu,
             recompute_dists=knn_args.recompute_dists,
-            k=knn_args.k, lmbda=knn_args.lmbda, knn_temp=knn_args.knn_temp, probe=knn_args.probe)
+            k=knn_args.k, lmbda=knn_args.lmbda, knn_temp=knn_args.knn_temp, probe=knn_args.probe) # knn_drop=knn_args.knn_drop)
     elif knn_args.save_knnlm_dstore or knn_args.build_index:
         training_args.predict_with_generate = False
-        knn_wrapper = KNNSaver(dstore_size=knn_args.dstore_size, dstore_dir=knn_args.dstore_dir, 
+        knn_wrapper = KNNSaver(dstore_size=knn_args.dstore_size, dstore_dir=knn_args.dstore_dir,
             dimension=dimension, knn_keytype=knn_args.knn_keytype)
-    
+
     if knn_wrapper is not None:
         knn_wrapper.break_into(model)
 
@@ -527,6 +537,12 @@ def main():
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
+    def preprocess_function_predict(examples):
+        test =[prefix + ex for ex in examples["text"]]
+        model_test = tokenizer(test, max_length=data_args.max_source_length, padding=padding, truncation=True)
+
+        return model_test
+
     if training_args.do_train:
         if "train" not in raw_datasets:
             raise ValueError("--do_train requires a train dataset")
@@ -543,7 +559,7 @@ def main():
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on train dataset",
             )
-        total_eval_tokens = 0        
+        total_eval_tokens = 0
         for chunk in train_dataset['labels']:
             total_eval_tokens += len([x for x in chunk[1:] if x != -100])
         logger.info(f'[train] Total eval tokens: {total_eval_tokens}')
@@ -552,8 +568,10 @@ def main():
         max_target_length = data_args.val_max_target_length
         if "validation" not in raw_datasets:
             raise ValueError("--do_eval requires a validation dataset")
+        else:
+            print("Starting validation preprocessing...............................", flush=True)
         eval_dataset = raw_datasets[data_args.eval_subset]
-        if data_args.max_eval_samples is not None:
+        if data_args.max_eval_samples is not None: # for debugging purposes
             max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
             eval_dataset = eval_dataset.select(range(max_eval_samples))
         with training_args.main_process_first(desc="validation dataset map pre-processing"):
@@ -565,12 +583,10 @@ def main():
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on validation dataset",
             )
-        total_eval_tokens = 0        
+        total_eval_tokens = 0
         for chunk in eval_dataset['labels']:
             total_eval_tokens += len([x for x in chunk if x != -100])
         logger.info(f'[{data_args.eval_subset}] Total eval tokens: {total_eval_tokens}')
-        if knn_args.dstore_size is None and knn_args.save_knnlm_dstore:
-            knn_args.dstore_size = total_eval_tokens
 
     if training_args.do_predict:
         max_target_length = data_args.val_max_target_length
@@ -582,7 +598,7 @@ def main():
             predict_dataset = predict_dataset.select(range(max_predict_samples))
         with training_args.main_process_first(desc="prediction dataset map pre-processing"):
             predict_dataset = predict_dataset.map(
-                preprocess_function,
+                preprocess_function_predict,
                 batched=True,
                 num_proc=data_args.preprocessing_num_workers,
                 remove_columns=column_names,
@@ -645,7 +661,7 @@ def main():
         callbacks=[EarlyStoppingCallback(early_stopping_patience=data_args.patience)] if data_args.patience is not None else None,
     )
 
-    # Training
+    # Training of the MODEL
     if training_args.do_train:
         checkpoint = None
         if training_args.resume_from_checkpoint is not None:
@@ -700,9 +716,15 @@ def main():
 
         if trainer.is_world_process_zero():
             if training_args.predict_with_generate:
-                predictions = tokenizer.batch_decode(
-                    predict_results.predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
-                )
+                # predictions = tokenizer.batch_decode(
+                #     predict_results.predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
+                # )
+
+                predictions = []
+                for sentence in predict_results.predictions:
+                    pred = tokenizer.convert_ids_to_tokens(sentence, skip_special_tokens=True)
+                    predictions.append(' '.join(pred))
+
                 predictions = [pred.strip() for pred in predictions]
                 output_prediction_file = os.path.join(training_args.output_dir, "generated_predictions.txt")
                 with open(output_prediction_file, "w", encoding="utf-8") as writer:
@@ -721,20 +743,15 @@ def main():
     if len(languages) > 0:
         kwargs["language"] = languages
 
-    if training_args.push_to_hub:
-        trainer.push_to_hub(**kwargs)
-    else:
-        trainer.create_model_card(**kwargs)
-
     if knn_args.build_index:
         knn_wrapper.build_index()
 
     if knn_args.cluster_dstore:
         knn_wrapper.cluster_dstore(num_clusters=knn_args.num_clusters, sample_size=knn_args.sample_size, model=model)
-    
+
     if knn_wrapper is not None:
         knn_wrapper.break_out()
-    
+
     return results
 
 

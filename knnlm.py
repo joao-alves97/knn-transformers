@@ -256,6 +256,10 @@ class KNNWrapper(object):
             KEY_TYPE.last_ffn_input: (lambda model: model.base_model.decoder.layers[-1].fc1, True),
             KEY_TYPE.last_ffn_output: (lambda model: model.base_model.decoder.layers[-1], False),
         },
+        'mbart': {
+            KEY_TYPE.last_ffn_input: (lambda model: model.base_model.decoder.layers[-1].fc1, True),
+            KEY_TYPE.last_ffn_output: (lambda model: model.base_model.decoder.layers[-1], False),
+        },
         'gpt2': {
             KEY_TYPE.last_ffn_input: (lambda model: model.base_model.h[-1].mlp, True),
             KEY_TYPE.last_ffn_output: (lambda model: model.base_model.h[-1], False),
@@ -323,15 +327,14 @@ class KNNSaver(object):
         self.dstore_keys = np.memmap(keys_filename, dtype=np.float16, mode=mode, shape=(self.dstore_size, self.dimension))
         self.dstore_vals = np.memmap(vals_filename, dtype=np.int32, mode=mode, shape=(self.dstore_size, 1))
 
-    def pre_forward_hook(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
-        if labels is None:
-            raise ValueError('labels must be provided when saving a datastore. Are you using --predict_with_generate by mistake? If so, disable it')
+    def pre_forward_hook(self, input_ids, labels, attention_mask, **kwargs):
         self.labels = labels
         return self.original_forward_func(input_ids=input_ids, labels=labels, attention_mask=attention_mask, **kwargs)
 
     def post_forward_hook(self, module, input, output):
         shift = 0 if self.is_encoder_decoder else 1
         captured_keys = self.activation_capturer.captured
+        print(len(captured_keys))
         if shift == 1:
             captured_keys = captured_keys[:, :-shift]
         captured_keys = captured_keys.flatten(0, 1) # (batch * time, dim)
@@ -371,7 +374,7 @@ class KNNSaver(object):
             self.model.broken_into = None
 
     def build_index(self, num_keys_to_add_at_a_time=1000000, 
-            ncentroids=4096, seed=1, code_size=64, probe=32):
+            ncentroids= 2000, seed=1, code_size=64, probe=32):
         logger.info('Building index')
         index_name = get_index_path(self.dstore_dir, self.model.config.model_type, self.dstore_size, self.dimension) 
         
